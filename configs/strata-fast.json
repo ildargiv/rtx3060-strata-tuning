@@ -6,7 +6,7 @@
     "--ple-gguf", "<DATA>\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
     "--expert-profile", "<STRATA>\\data\\expert-profile.bin",
     "--expert-cache", "auto",
-    "--prefill", "auto",
+    "--prefill", "7168",
     "--spec", "4",
     "--mtp", "<DATA>\\mtp\\rt",
     "--max-context", "262144",

@@ -16,6 +16,7 @@ the scripts that made it are in `scripts/`.
 | + `--spec-min-p 0.5` | 44.0 | 618 | — | — |
 | **+ `STRATA_ROUTE_PRIOR=1.5`** (chosen fast config) | **61.0** (code: 63.1) | 619 | 91.6% | 1.0% |
 | fast config, `--vram-reserve-mib 1408` (safer VRAM guard) | 58.6 | 611 | — | — |
+| fast config, `--prefill 7168` (later verified, see step 8) | 62.7 (32K) / 57.8 (131K) | 684.7 (32K) / 668.7 (131K) | — | — |
 
 Decode is the engine's own figure from its log line (see Methodology). Prefill is the 7,063-token request.
 The jump from 44 to 61 came from one setting, `STRATA_ROUTE_PRIOR=1.5`. Everything else moved the
@@ -29,6 +30,19 @@ Sweep on the chosen fast config (fresh prompts, 256 output tokens, two repetitio
 | 4,393 | 539.1 | 69.7 (65.9–73.5) |
 | 34,759 | 640.9 | 56.1 (55.5–56.7) |
 | 138,853 | 641.0 | 60.9 (59.8–62.0) |
+
+Same sweep, later on the same day, with `--prefill 7168` in place of `--prefill auto` (`results/raw/bench-3060-262k-prefill7168.json`):
+
+| Prompt tokens | Prefill tok/s (median) | Decode tok/s (median, range) |
+| ---: | ---: | ---: |
+| 1,152 | 228.6 | 62.0 (61.1–62.9) |
+| 4,392 | 534.4 | 59.2 (53.7–64.7) |
+| 34,759 | **684.7** | 62.7 (58.1–67.3) |
+| 138,853 | **668.7** | 57.8 (57.4–58.2) |
+
+Prefill at 34,759 and 138,853 tokens improved by 6.8% and 4.3%; the two short prompts moved by 2% and 1%,
+which is noise. Decode moved in both directions between sizes (32K better, 131K worse), so we do not attribute
+any of the decode movement to this flag. See step 8.
 
 ## Hardware (exact)
 
@@ -80,9 +94,17 @@ server and benchmarking each step. The steps, in order:
    --conversation-cache-park-gain 256`). The log shows it parking 38,009 tokens in 344 ms and refusing to park
    short requests. We did not benchmark it separately.
 
-Two candidate settings we found in the engine's documentation were **not tested**: `--prefill 7168` (to keep
-the 131K chunk size at 262K context, which should recover prefill), and `--kv int8` (better long-context
-quality, roughly +1.7 GiB pinned RAM, smaller VRAM cache). Both are listed as next steps.
+8. **Set `--prefill 7168`** so the chunk size stays at 7,168 tokens instead of the 6,400 the engine picked at
+   262K context. This recovers part of the prefill we had at 131K context: 34,759 tokens went 640.9 → **684.7**
+   tok/s and 138,853 tokens went 641.0 → **668.7** tok/s, measured the same way as the sweep above
+   (`0 reused`, two repetitions). Decode moved with the noise, not with the setting: 62.7 tok/s at 32K and
+   57.8 at 131K, versus 56.1 and 60.9 at the auto chunk. The engine kept the same expert-cache size
+   (2,093–2,096 slots) and the same VRAM situation (742–749 MiB free after the slots, same warnings).
+   Keeping `--prefill auto` was never the reason for the 262K prefill drop — the chunk size was, and fixing
+   the chunk recovers most of the gap while leaving the context the same.
+
+Two candidate settings we found in the engine's documentation are **still untested**: `--kv int8` (better
+long-context quality, roughly +1.7 GiB pinned RAM, smaller VRAM cache). It is listed as a next step.
 
 ## What did not work, and our mistakes
 
@@ -135,7 +157,7 @@ cost, and mapped each item to a Strata setting we could measure here:
 | Confidence-scheduled verification, draft length cap | `--spec 4 --spec-min-p 0.5` | Drafts offered 106 → 221 per 256 tokens; decode unchanged |
 | MoE expert placement (EP / EPLB) | `--expert-cache auto` + `STRATA_ROUTE_PRIOR=1.5` | Hit rate 61.6% → 91.6%; decode 44 → 61 |
 | KV cache management | `--kv q4_0 --kv-resident 32768`, `--conversation-cache-mib 6144` | 262K window with 1.69 GiB KV in RAM; 38,009 tokens parked in 344 ms |
-| Asynchronous scheduling | sm_86 defaults (`STRATA_ADAPT_NOWAIT`, `STRATA_ADAPT_LAG`) and `--prefill auto` | Left at defaults; not A/B tested |
+| Asynchronous scheduling | sm_86 defaults (`STRATA_ADAPT_NOWAIT`, `STRATA_ADAPT_LAG`) and `--prefill 7168` | Chunk size 6,400 → 7,168 tokens; prefill +6.8% at 34K and +4.3% at 138K |
 | Deterministic measurement | greedy decoding, log-based timings, nonce prompts | Makes the numbers comparable across restarts |
 
 DeepInfer's prefill/decode disaggregation and data-parallel load balancing have no single-GPU equivalent,
@@ -155,13 +177,48 @@ so the analogy stops there.
 ## Not in this report
 
 - Results from other people's machines (we did not compare against them in the tables).
-- Any GPU firmware or BIOS modification. This report covers software settings only.
+- Any GPU firmware or BIOS modification. These tables are software settings only. We did run a UEFI
+  in-RAM unlock on this card (`10de:2504`, read-only preflight confirmed first, then one transaction); its
+  measured effect on these numbers is not in these tables yet, see "Unlock" below.
 - Quality evaluation of the model under each setting. `STRATA_ROUTE_PRIOR=1.5` is documented by Strata
   as able to repeat text and weaken long agentic runs. We did not evaluate that ourselves.
 
+## Unlock attempt: what ran, and what it did not do
+
+We ran the pre-boot unlock on this card (upstream project, GA106 `10de:2504` on an ASUS PRIME X570-P).
+Read-only preflight on a new stick gave three agreeing cold-boot reports and a fourth with every gate
+confirmed (`complete=1`, `result=pass`), then one transaction ran successfully: Bus Master enabled and
+removed again, driver released, firmware stage loaded and DMA'd, PCIe FLR, `FINAL status=0 ... clean=1`.
+Four later boots were refused on purpose: the card was no longer in the cold state the profile was built
+from (`SS0=0 SS1=0`), so nothing was written (`attempted=0`, `clean=1`). Reports are in the upstream tree's
+`evidence/` directory.
+
+After the transaction the machine went back to Windows (a warm reboot, same power session) and we re-ran
+the same sweep on the same config: `results/raw/bench-3060-262k-prefill7168.json` is the run before,
+`results/raw/bench-3060-262k-post-run04.json` the run after. Engine log, fresh prompts, `0 reused`,
+two repetitions each.
+
+| Prompt tokens | Prefill tok/s, before → after | Decode tok/s, before → after |
+| ---: | ---: | ---: |
+| 1,152 | 228.6 → 231.1 | 62.0 → 62.8 |
+| 4,392 | 534.4 → 546.3 | 59.2 → 61.5 |
+| 34,759 | 684.7 → 694.4 | 62.7 → 61.2 |
+| 138,852 | 668.7 → 670.3 | 57.8 → 51.8 |
+
+Prefill moved up by 1–2% at every size; decode moved in both directions (two sizes up, two down), and the
+138,852-token decode is the only number that fell well outside the run-to-run spread (49.2 and 54.3 in the
+two repetitions, against 57.4 and 58.2 before).
+
+This run is **not an isolated A/B**: the card was left running in the same power session with a warm reboot
+between the transaction and the measurement. What we did record afterwards is the power behaviour: 162–165 W
+drawn against a 170 W limit, `SW Power Cap` active, memory clock 7301 MHz of 7501, core 1867–1912 MHz,
+`SW Power Capping` counter 8.26 s accumulated. We did not sample power during the before-run, so we cannot
+attribute the 138,852-token decode drop to the unlock. The honest reading is: the unlock ran correctly as a
+procedure, it made no measurable improvement here, and the clean cold-boot comparison is still owed.
+
 ## Next steps
 
-- `--prefill 7168` at 262K context.
+- A clean unlock A/B: cold boot, one transaction, then Windows immediately, then the same sweep.
 - `--kv int8` versus `q4_0` at 262K.
 - BIOS DOCP to run the RAM at its rated 3200 MT/s, since the CPU expert pool is memory-bound.
 - A proper quality check of `STRATA_ROUTE_PRIOR=1.5` on long agentic tasks before recommending it for that use.
@@ -178,7 +235,21 @@ Text, scripts and configs: MIT. Model weights, packs and NVIDIA components keep 
 Ryzen 7 5700G, Windows 10, 64 GB RAM, контекст 262 144 токена.
 Декодирование выросло с **44 до 61 tok/s** одной переменной `STRATA_ROUTE_PRIOR=1.5`: доля попаданий в кэш экспертов
 поднялась с 61.6% до 91.6%, промахов через PCIe стало 1.0% вместо 6.3%. Остальное (`--spec-min-p 0.5`,
-авто-доля PCIe, резерв VRAM) дало изменения в пределах шума. Prefill держится около 610–640 tok/s и упирается в CPU.
+авто-доля PCIe, резерв VRAM) дало изменения в пределах шума. Prefill 640–641 tok/s на 34K и 138K токенах;
+с `--prefill 7168` (фиксированный размер чанка вместо подобранного движком 6400) стало 684.7 и 668.7 tok/s,
+то есть +6.8% и +4.3%. Скорость генерации при этом не изменилась в лучшую сторону.
+
+**Разблокировка.** Мы прогнали preflight (только чтение, три холодных запуска, затем подтверждённый профиль
+`complete=1`) и одну транзакцию: Bus Master включён/снят, драйвер прошивки отпущен, FWSEC поднят, сделан FLR,
+итог `clean=1`. Четыре последующих запуска были остановлены намеренно (карта уже не была в холодном состоянии,
+`attempted=0`). После транзакции тот же прогон на том же конфиге: prefill вырос на 1–2% на всех четырёх
+длинах (228.6 → 231.1, 534.4 → 546.3, 684.7 → 694.4, 668.7 → 670.3), генерация изменилась в обе стороны
+(62.0 → 62.8, 59.2 → 61.5, 62.7 → 61.2, 57.8 → 51.8). Это **не изолированное сравнение**: между транзакцией
+и замером был тёплый перезапуск в том же питании. Что зафиксировано после — так это энергоповедение:
+162–165 W при лимите 170 W, активный флаг `SW Power Cap`, память 7301 из 7501 МГц. Во время замера «до»
+мы мощность не мерили, поэтому просадку генерации на 138K токенах разблокировке не приписываем.
+Вывод честный: процедура разблокировки сработала, измеряемого ускорения в этой сборке нет, чистый
+cold-boot-тест ещё не сделан.
 
 **Железо.** ASUS PRIME X570-P (BIOS 3801), Ryzen 7 5700G (8 ядер/16 потоков), 2×32 GB Patriot 3200 C16 (работают на 3000 MT/s),
 RTX 3060 12 GB ASUS (`10de:2504`, `1043:881d`), драйвер 616.92, Windows 10 Pro 19045.
@@ -187,5 +258,6 @@ RTX 3060 12 GB ASUS (`10de:2504`, `1043:881d`), драйвер 616.92, Windows 1
 Перезапуск сервера несколько раз выдавал READY, пока старый сервер держал порт. Предположение о потере 7% из-за резерва VRAM
 не подтвердилось. Падение с 131K до 262K контекста пока не объяснено изолированным тестом.
 
-**Что дальше.** Проверить `--prefill 7168` и `--kv int8` при 262K, включить DOCP для ОЗУ, и отдельно проверить качество
+**Что дальше.** Чистое сравнение разблокировки: холодный запуск, одна транзакция, затем сразу Windows и тот же
+прогон. Затем `--kv int8` против `q4_0` при 262K, DOCP для ОЗУ, и отдельно проверка качества
 `STRATA_ROUTE_PRIOR=1.5` на длинных агентских задачах — прежде чем рекомендовать его для них.
