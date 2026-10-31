@@ -1,0 +1,28 @@
+{
+  "decode": {
+    "wall_s": 6.802,
+    "prompt_tokens": 69,
+    "completion_tokens": 256,
+    "engine": {
+      "prompt_tokens": 69,
+      "prefill_ms": 1036,
+      "prefill_tok_s": 66.6,
+      "generated": 256,
+      "decode_ms": 5760,
+      "decode_tok_s": 44.4
+    }
+  },
+  "prefill": {
+    "wall_s": 13.082,
+    "prompt_tokens": 7063,
+    "completion_tokens": 64,
+    "engine": {
+      "prompt_tokens": 7063,
+      "prefill_ms": 11616,
+      "prefill_tok_s": 608.0,
+      "generated": 64,
+      "decode_ms": 1453,
+      "decode_tok_s": 44.1
+    }
+  }
+}

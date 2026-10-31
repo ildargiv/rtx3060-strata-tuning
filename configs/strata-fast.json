@@ -1,0 +1,40 @@
+{
+  "exe": "<STRATA>\\engine\\strata.exe",
+  "args": [
+    "--pack", "<DATA>\\packs\\iq3_xxs",
+    "--native", "<DATA>\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "--ple-gguf", "<DATA>\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+    "--expert-profile", "<STRATA>\\data\\expert-profile.bin",
+    "--expert-cache", "auto",
+    "--prefill", "auto",
+    "--spec", "4",
+    "--mtp", "<DATA>\\mtp\\rt",
+    "--max-context", "262144",
+    "--kv", "q4_0",
+    "--kv-resident", "32768",
+    "--vision",
+    "--vram-reserve-mib", "1200",
+    "--spec-min-p", "0.5",
+    "--conversation-cache-mib", "6144",
+    "--conversation-cache-min-tokens", "2048",
+    "--conversation-cache-park-gain", "256"
+  ],
+  "cwd": "<STRATA>",
+  "tokenizer": "<DATA>\\packs\\iq3_xxs\\tokenizer",
+  "model_name": "qwen3.8-flash-next-iq3_xxs-12gb",
+  "log": "<STRATA>\\strata-iq3_xxs-12gb.log",
+  "lib_dirs": ["<STRATA>\\.venv\\Lib\\site-packages\\nvidia\\cu13\\bin\\x86_64"],
+  "port": 8090,
+  "host": "127.0.0.1",
+  "allowed_hosts": "*",
+  "vision": {
+    "exe": "<STRATA>\\engine\\strata-vision.exe",
+    "mmproj": "<DATA>\\models\\mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<DATA>\\models\\IQ3_XXS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "gpu": true,
+    "max_tokens": 1024
+  },
+  "env": {
+    "STRATA_ROUTE_PRIOR": "1.5"
+  }
+}

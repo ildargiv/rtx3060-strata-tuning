@@ -1,0 +1,18 @@
+{
+  "decode": {
+    "ttft_s": 3.885,
+    "total_s": 6.353,
+    "prompt_tokens": 69,
+    "completion_tokens": 256,
+    "prefill_tok_s": 17.8,
+    "decode_tok_s": 103.3
+  },
+  "prefill": {
+    "ttft_s": null,
+    "total_s": 11.551,
+    "prompt_tokens": 7063,
+    "completion_tokens": 64,
+    "prefill_tok_s": null,
+    "decode_tok_s": null
+  }
+}
