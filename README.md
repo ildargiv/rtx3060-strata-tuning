@@ -131,6 +131,10 @@ These are in the report on purpose; several cost us time.
 - **Run-to-run noise is real.** The starting config measured 49.6 tok/s once (a single longer request, earlier
   the same day) and 47.8 later. Any difference under about 3 tok/s on this machine should be treated as noise
   until repeated.
+- **Every sweep was measured while our own agent was using the same server.** The decode numbers show it: two
+  repetitions of the same 34,759-token prompt in one run came out 57.6 and 53.1 tok/s. The prefill figures are
+  stable enough to compare (within 1% run to run); decode comparisons are not, and we should not quote a decode
+  difference as a finding until it is repeated on an idle server with four repetitions per size.
 
 ## Methodology
 
@@ -186,39 +190,57 @@ so the analogy stops there.
 ## Unlock attempt: what ran, and what it did not do
 
 We ran the pre-boot unlock on this card (upstream project, GA106 `10de:2504` on an ASUS PRIME X570-P).
-Read-only preflight on a new stick gave three agreeing cold-boot reports and a fourth with every gate
-confirmed (`complete=1`, `result=pass`), then one transaction ran successfully: Bus Master enabled and
-removed again, driver released, firmware stage loaded and DMA'd, PCIe FLR, `FINAL status=0 ... clean=1`.
-Four later boots were refused on purpose: the card was no longer in the cold state the profile was built
-from (`SS0=0 SS1=0`), so nothing was written (`attempted=0`, `clean=1`). Reports are in the upstream tree's
-`evidence/` directory.
+Read-only preflight on a new stick gave four agreeing cold-boot reports, the fourth with every gate
+confirmed (`complete=1`, `result=pass`). One transaction then ran successfully: Bus Master enabled and
+removed again, driver released, firmware stage loaded and DMA'd, selector write, PCIe FLR,
+`FINAL status=0 stage=transaction attempted=1 driver_release=1 clean=1`.
 
-After the transaction the machine went back to Windows (a warm reboot, same power session) and we re-ran
-the same sweep on the same config: `results/raw/bench-3060-262k-prefill7168.json` is the run before,
-`results/raw/bench-3060-262k-post-run04.json` the run after. Engine log, fresh prompts, `0 reused`,
-two repetitions each.
+Five later boots were refused on purpose (`attempted=0`, `clean=1`). Four of them are the guard working as
+designed: the card came up warm, the selector registers read as zero, and the app does not write to a card it
+cannot confirm is in the state the profile was built from. The fifth is worth reporting because the reason
+changed. After a full power cycle the card read `SS0=0x13414010`, where the profile records `SS0=0x53414010`
+from four earlier cold boots: one bit (bit 30) different, everything else identical — same chip, PLM, GFW,
+WPR2, `SS1=6`, `fb_mb=0x3000`, BAR0 size and capability value. We do not know which of the two explanations
+is true: that the bit varies on its own between cold boots (the upstream profile for this card masks bit 30
+out of its SS0 gate), or that our transaction changed a latch that survived the power cycle. Either way the
+guard stopped it, and nothing was written.
 
-| Prompt tokens | Prefill tok/s, before → after | Decode tok/s, before → after |
+### What the throughput runs did and did not capture
+
+All three runs below are the same config and the same sweep (engine log, fresh prompts, `0 reused`, two
+repetitions). Files: `results/raw/bench-3060-262k-prefill7168.json`, `bench-3060-262k-post-run04.json`,
+`bench-3060-262k-post-run09.json`.
+
+| Prompt tokens | Prefill tok/s: baseline / run A / run B | Decode tok/s: baseline / run A / run B |
 | ---: | ---: | ---: |
-| 1,152 | 228.6 → 231.1 | 62.0 → 62.8 |
-| 4,392 | 534.4 → 546.3 | 59.2 → 61.5 |
-| 34,759 | 684.7 → 694.4 | 62.7 → 61.2 |
-| 138,852 | 668.7 → 670.3 | 57.8 → 51.8 |
+| 1,152 | 228.6 / 231.1 / 225.9 | 62.0 / 62.8 / 53.8 |
+| 4,392 | 534.4 / 546.3 / 540.9 | 59.2 / 61.5 / 63.5 |
+| 34,759 | 684.7 / 694.4 / 694.3 | 62.7 / 61.2 / 55.4 |
+| 138,852 | 668.7 / 670.3 / 669.9 | 57.8 / 51.8 / 59.5 |
 
-Prefill moved up by 1–2% at every size; decode moved in both directions (two sizes up, two down), and the
-138,852-token decode is the only number that fell well outside the run-to-run spread (49.2 and 54.3 in the
-two repetitions, against 57.4 and 58.2 before).
+baseline = the sweep that established `--prefill 7168` (step 8); run A = the Windows session that followed
+the successful transaction (15:36 boot); run B = the Windows session after the fifth, SS0-refused boot
+(16:15 boot, nothing written).
 
-This run is **not an isolated A/B**: the card was left running in the same power session with a warm reboot
-between the transaction and the measurement. What we did record afterwards is the power behaviour: 162–165 W
-drawn against a 170 W limit, `SW Power Cap` active, memory clock 7301 MHz of 7501, core 1867–1912 MHz,
-`SW Power Capping` counter 8.26 s accumulated. We did not sample power during the before-run, so we cannot
-attribute the 138,852-token decode drop to the unlock. The honest reading is: the unlock ran correctly as a
-procedure, it made no measurable improvement here, and the clean cold-boot comparison is still owed.
+**Run A did not carry the transaction, and we should have written this before publishing it.** Between the
+transaction (15:31) and that Windows boot (15:35:50) four more UEFI boots happened, all refused, and each one
+re-initialises the card before Windows starts. Run A therefore compares a baseline with a card of unknown
+state, not unlocked with locked. Run B is the clean control: full power cycle, transaction refused, nothing
+written. Its prefill is within 1% of the baseline at every size except 34,759 (694.3 against 684.7), which is
+the same value run A produced.
+
+Decode is not usable at this sample size: inside run B, two repetitions of the same prompt size differed by
+7.7 tok/s, and our own agent session was sending traffic to the server during every sweep. Nothing in these
+numbers separates a real effect from noise, and the honest summary is that no Windows measurement has been
+taken yet that provably carries a completed transaction. The clean A/B is still owed.
 
 ## Next steps
 
-- A clean unlock A/B: cold boot, one transaction, then Windows immediately, then the same sweep.
+- A clean unlock A/B: cold boot, one transaction, then Windows immediately, then the same sweep. On this
+  machine that needs the SS0 gate to accept the value the card now reports on a cold boot (the profile
+  currently records four cold boots that all read `0x53414010`, and the fifth refused).
+- More repetitions before drawing any conclusion about decode: four repetitions per size, server idle, no
+  agent traffic during the sweep.
 - `--kv int8` versus `q4_0` at 262K.
 - BIOS DOCP to run the RAM at its rated 3200 MT/s, since the CPU expert pool is memory-bound.
 - A proper quality check of `STRATA_ROUTE_PRIOR=1.5` on long agentic tasks before recommending it for that use.
@@ -239,17 +261,27 @@ Ryzen 7 5700G, Windows 10, 64 GB RAM, контекст 262 144 токена.
 с `--prefill 7168` (фиксированный размер чанка вместо подобранного движком 6400) стало 684.7 и 668.7 tok/s,
 то есть +6.8% и +4.3%. Скорость генерации при этом не изменилась в лучшую сторону.
 
-**Разблокировка.** Мы прогнали preflight (только чтение, три холодных запуска, затем подтверждённый профиль
-`complete=1`) и одну транзакцию: Bus Master включён/снят, драйвер прошивки отпущен, FWSEC поднят, сделан FLR,
-итог `clean=1`. Четыре последующих запуска были остановлены намеренно (карта уже не была в холодном состоянии,
-`attempted=0`). После транзакции тот же прогон на том же конфиге: prefill вырос на 1–2% на всех четырёх
-длинах (228.6 → 231.1, 534.4 → 546.3, 684.7 → 694.4, 668.7 → 670.3), генерация изменилась в обе стороны
-(62.0 → 62.8, 59.2 → 61.5, 62.7 → 61.2, 57.8 → 51.8). Это **не изолированное сравнение**: между транзакцией
-и замером был тёплый перезапуск в том же питании. Что зафиксировано после — так это энергоповедение:
-162–165 W при лимите 170 W, активный флаг `SW Power Cap`, память 7301 из 7501 МГц. Во время замера «до»
-мы мощность не мерили, поэтому просадку генерации на 138K токенах разблокировке не приписываем.
-Вывод честный: процедура разблокировки сработала, измеряемого ускорения в этой сборке нет, чистый
-cold-boot-тест ещё не сделан.
+**Разблокировка.** Preflight (только чтение) отработал на четырёх холодных запусках, четвёртый — со всеми
+подтверждёнными гейтами (`complete=1`). Одна транзакция прошла: Bus Master включён/снят, драйвер прошивки
+отпущен, FWSEC поднят, FLR сделан, итог `attempted=1 driver_release=1 clean=1`. Пять последующих запусков
+были остановлены намеренно (`attempted=0`): четыре — потому что карта была в тёплом состоянии, пятый — по
+новой причине, см. ниже.
+
+Замеры скорости в Windows: baseline (228.6 / 534.4 / 684.7 / 668.7), прогон после транзакции
+(231.1 / 546.3 / 694.4 / 670.3) и контрольный прогон после холодного запуска с остановленной транзакцией
+(225.9 / 540.9 / 694.3 / 669.9 — ничего записано не было). Контрольный prefill совпадает с baseline
+с точностью 1%. Но прогон «после транзакции» не может относиться к разблокировке: между транзакцией (15:31)
+и загрузкой Windows (15:35:50) было ещё четыре запуска флешки, все остановленные, и каждый заново
+инициализирует карту. То есть у нас пока **нет ни одного замера в Windows, который доказанно несёт
+завершённую транзакцию**. Генерация вообще непригодна: два повтора одной длины в одном прогоне дали
+7.7 tok/s разброса, и сервер всё время нагружался нашим же агентом.
+
+Пятый отказ — важное наблюдение: после полного выключения питания карта читает `SS0=0x13414010`, тогда как
+в профиле записано `0x53414010` с четырёх предыдущих холодных запусков. Отличается ровно один бит (бит 30),
+всё остальное идентично: тот же chip, PLM, GFW, WPR2, `SS1=6`, `fb_mb=0x3000`, BAR0, capability. Две
+гипотезы, и мы не знаем, какая верна: бит сам меняется между холодными запусками (в upstream-профиле этой
+карты бит 30 из гейта SS0 исключён) либо транзакция изменила фиксируемый бит, который пережил выключение
+питания. В любом случае защита сработала, ничего не записано.
 
 **Железо.** ASUS PRIME X570-P (BIOS 3801), Ryzen 7 5700G (8 ядер/16 потоков), 2×32 GB Patriot 3200 C16 (работают на 3000 MT/s),
 RTX 3060 12 GB ASUS (`10de:2504`, `1043:881d`), драйвер 616.92, Windows 10 Pro 19045.
@@ -259,5 +291,7 @@ RTX 3060 12 GB ASUS (`10de:2504`, `1043:881d`), драйвер 616.92, Windows 1
 не подтвердилось. Падение с 131K до 262K контекста пока не объяснено изолированным тестом.
 
 **Что дальше.** Чистое сравнение разблокировки: холодный запуск, одна транзакция, затем сразу Windows и тот же
-прогон. Затем `--kv int8` против `q4_0` при 262K, DOCP для ОЗУ, и отдельно проверка качества
-`STRATA_ROUTE_PRIOR=1.5` на длинных агентских задачах — прежде чем рекомендовать его для них.
+прогон; для этого на нашей машине нужно принять то значение `SS0`, которое карта читает на холодном запуске
+сейчас (профиль записывает четыре запуска по `0x53414010`, а пятый запуск отказал по иному значению). Затем
+`--kv int8` против `q4_0` при 262K, DOCP для ОЗУ, и отдельно проверка качества `STRATA_ROUTE_PRIOR=1.5`
+на длинных агентских задачах — прежде чем рекомендовать его для них.
