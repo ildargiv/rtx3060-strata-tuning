@@ -5,6 +5,11 @@ running Qwen3.8-Flash-Next **IQ3_XXS** on one GeForce RTX 3060 12 GB in a Ryzen 
 Windows 10. Every number here was produced on that machine. Raw data is in `results/`,
 the scripts that made it are in `scripts/`, and the pre-boot unlock logs are in `evidence/asus3060/`.
 
+![Strata Monitor](assets/strata-monitor.png)
+
+*The Monitor page of the server itself: 31 Oct 2026, the 262K config, card unlocked, real agent traffic —
+hit rate 92.0%, VRAM 10.9/12 GB, 168 W of the 170 W limit, Gen3 x16 in idle.*
+
 Русская версия — в конце файла.
 
 ## Result
@@ -351,9 +356,8 @@ we measured:
 
 ### The Monitor screenshot
 
-![Strata Monitor](assets/strata-monitor.png)
-
-The server's own Monitor page (`http://127.0.0.1:8090/#monitor`), rendered headless browser-side, 31 Oct 22:12,
+The screenshot is at the very top of this file. The server's own Monitor page
+(`http://127.0.0.1:8090/#monitor`), rendered headless browser-side, 31 Oct 22:12,
 unlocked, the 262K config, under real agent traffic. What it shows: hit rate 92.0% (542.5M cached tokens,
 3,365 cached seconds); VRAM 10.9/12 GB with 2,096 experts resident; system RAM 56.3/63.5 GB; power 168 W of
 the 170 W cap; 73 °C; context fill 184K / 258K; the link idle at Gen3 x16. Recent requests rows are our own
