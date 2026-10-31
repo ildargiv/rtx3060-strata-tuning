@@ -1,0 +1,41 @@
+{
+  "decode": {
+    "wall_s": 4.862,
+    "prompt_tokens": 69,
+    "completion_tokens": 256,
+    "engine": {
+      "prompt_tokens": 69,
+      "prefill_ms": 696,
+      "prefill_tok_s": 99.1,
+      "generated": 256,
+      "decode_ms": 4160,
+      "decode_tok_s": 61.5
+    }
+  },
+  "prefill": {
+    "wall_s": 10.4,
+    "prompt_tokens": 7063,
+    "completion_tokens": 64,
+    "engine": {
+      "prompt_tokens": 7063,
+      "prefill_ms": 9337,
+      "prefill_tok_s": 756.5,
+      "generated": 64,
+      "decode_ms": 1051,
+      "decode_tok_s": 60.9
+    }
+  },
+  "code": {
+    "wall_s": 4.969,
+    "prompt_tokens": 89,
+    "completion_tokens": 256,
+    "engine": {
+      "prompt_tokens": 89,
+      "prefill_ms": 1002,
+      "prefill_tok_s": 88.8,
+      "generated": 256,
+      "decode_ms": 3962,
+      "decode_tok_s": 64.6
+    }
+  }
+}

@@ -3,7 +3,7 @@
 Our own measurements of [Strata](https://github.com/Niko1221/Strata) (engine 0.1.54, app 0.2.8)
 running Qwen3.8-Flash-Next **IQ3_XXS** on one GeForce RTX 3060 12 GB in a Ryzen 7 5700G desktop,
 Windows 10. Every number here was produced on that machine. Raw data is in `results/`,
-the scripts that made it are in `scripts/`.
+the scripts that made it are in `scripts/`, and the pre-boot unlock logs are in `evidence/asus3060/`.
 
 Русская версия — в конце файла.
 
@@ -21,6 +21,10 @@ the scripts that made it are in `scripts/`.
 Decode is the engine's own figure from its log line (see Methodology). Prefill is the 7,063-token request.
 The jump from 44 to 61 came from one setting, `STRATA_ROUTE_PRIOR=1.5`. Everything else moved the
 number by less than the run-to-run noise we measured.
+
+On 31 October the card itself was also unlocked pre-boot (UEFI in-RAM, see Unlock below). In that state the
+fast config's prefill rose by 6.8–8.9% and the tensor rate measured at the chip's full capability
+(48.7 TF/s GEMM); decode did not move. The tables above are the locked-state config.
 
 Sweep on the chosen fast config (fresh prompts, 256 output tokens, two repetitions each; ranges are min–max):
 
@@ -52,6 +56,7 @@ any of the decode movement to this flag. See step 8.
 | CPU | AMD Ryzen 7 5700G, 8 cores / 16 threads (Zen 3, integrated Radeon, display attached here) |
 | RAM | 2 × 32 GB Patriot "3200 C16" kit, **running at 3000 MT/s** (DOCP not enabled) |
 | GPU | ASUS GeForce RTX 3060 12 GB, PCI ID `10de:2504`, subsystem `1043:881d`, 170 W limit |
+| GPU vBIOS | 94.06.2f.00.cb |
 | GPU driver | 616.92 |
 | OS | Windows 10 Pro 19045, Secure Boot off |
 | Storage | model files on a local SSD |
@@ -146,6 +151,10 @@ These are in the report on purpose; several cost us time.
 - **Warm-up request discarded**, then the measured requests. The expert cache warms during a session, so the
   first request is not comparable with the fifth.
 - **GPU sampled during the run** with `nvidia-smi` to confirm the card was not the limit.
+- **GEMM numbers** (`results/raw/gemm/`) come from a harness rebuilt on this machine from the upstream
+  analysis sources (MSVC + CUDA 12.6 `nvcc`, `-arch=sm_86`, cuBLAS 12.8), run with the Strata server stopped;
+  clocks and power sampled via NVML, energy from `nvml_total_energy`.
+- **The Monitor screenshot** is a headless rendering of the server's own Monitor page, not a screen capture.
 - **Sample size is small.** Most rows are one or two requests. The sweep has two repetitions per size. Treat
   differences under about 3 tok/s as noise.
 
@@ -181,13 +190,13 @@ so the analogy stops there.
 ## Not in this report
 
 - Results from other people's machines (we did not compare against them in the tables).
-- Any GPU firmware or BIOS modification. These tables are software settings only. We did run a UEFI
-  in-RAM unlock on this card (`10de:2504`, read-only preflight confirmed first, then one transaction); its
-  measured effect on these numbers is not in these tables yet, see "Unlock" below.
+- No GPU firmware or vBIOS changes. The UEFI in-RAM unlock was a pre-boot, in-RAM operation: nothing was
+  written to the card's flash. Its full transaction story and the measured effect on these numbers are in the
+  Unlock section below.
 - Quality evaluation of the model under each setting. `STRATA_ROUTE_PRIOR=1.5` is documented by Strata
   as able to repeat text and weaken long agentic runs. We did not evaluate that ourselves.
 
-## Unlock attempt: what ran, and what it did not do
+## Unlock: what ran, what was refused, and what it changed
 
 We ran the pre-boot unlock on this card (upstream project, GA106 `10de:2504` on an ASUS PRIME X570-P).
 Read-only preflight on a new stick gave four agreeing cold-boot reports, the fourth with every gate
@@ -234,11 +243,144 @@ Decode is not usable at this sample size: inside run B, two repetitions of the s
 numbers separates a real effect from noise, and the honest summary is that no Windows measurement has been
 taken yet that provably carries a completed transaction. The clean A/B is still owed.
 
+### Gate audit, and the second transaction (RUN10)
+
+The SS0 question was already answered upstream: their profile for this card masks bit 30 out of the SS0 gate.
+We made the same decision for our profile's gate on this card: both `0x53414010` and `0x13414010` are accepted
+as valid cold-state SS0. This is a gate-level setting, described in words here; nothing from the upstream
+project (GPLv2) is copied into this MIT repository.
+
+At the next cold boot (31 Oct, 16:44) the card's SS0 passed the gate (`ss0=1`), and the transaction ran to
+completion:
+
+```text
+selector read: SS0=0x13414010 expected_unlock=0x88888888
+selector write: SS0=0x88888888
+selector read: SS1=0x6 expected_unlock=0x8
+selector write: SS1=0x8
+PCIe FLR returned: result=0
+post-FLR SEC2 reset released, GSP halted, BME=0 pending=0
+  WPR2=1ffffe00:00000000 SS0=88888888 SS1=00000008
+transaction result=0 containment=0 started=1 quiesced=1 fault=0 retained=0 maps=0 FLR=1
+FINAL status=0 stage=transaction attempted=1 driver_release=1 clean=1
+```
+
+The unlocked values stayed in the selector registers over the FLR; GSP was halted, WPR2 re-armed, Bus Master
+cleared. That boot is the Windows session (16:59 onward) that everything measured in this section belongs to.
+Full logs: `evidence/asus3060/asus3060-transaction-02.txt`; the refusal it followed is
+`evidence/asus3060/asus3060-refused-run09.txt` (`cold gates: ... ss0=0`,
+`FINAL status=0x8000000000000006 stage=cold-state attempted=0`); the preflight with every gate confirmed is
+`evidence/asus3060/asus3060-preflight-04-confirmed.txt`.
+
+### GEMM proof on this card, unlocked
+
+The Strata server was stopped and the card was measured directly with CUDA GEMM (4096 × 4096 matrices,
+15 s each, 5 s warm-up, 5 s idle, three runs, `0000:01:00.0`, display attached on this card). Built from the
+upstream analysis harness sources: MSVC (VS 2022 BuildTools), CUDA 12.6 `nvcc`, `-arch=sm_86`, cuBLAS 12.8;
+clocks and power sampled via NVML every 200 ms, energy from `nvml_total_energy`; the FP32 control is
+reference-checked. Raw files: `results/raw/gemm/`.
+
+| Benchmark | run 1 | run 2 | run 3 | avg power | median SM clock |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FP16 tensor, FP32 accumulate | **48.66** | **48.64** | **48.77** TF/s | 131 W | 1942–1950 MHz |
+| BF16 tensor, FP32 accumulate | 50.57 | 50.44 | 50.50 TF/s | 147 W | 1980–1995 MHz |
+| FP16 tensor, FP16 accumulate (control) | 47.93 | 47.81 | 47.82 TF/s | 122 W | 1792–1800 MHz |
+| FP32 pedantic (control) | 8.31 | 8.31 | 8.29 TF/s | 138 W | 1815–1822 MHz |
+
+Per gigahertz, the tensor GEMMs run at 25.0–25.4 TF/GHz — the full rate GA106 can produce. The 170 W limit
+is binding: the power-brake reason bit (`0x4`) is present in every run.
+
+A locked-state GEMM baseline for this card does not exist yet (see "What we still do not know"); the upstream
+card's measured locked value was ~25.8 TF/s — half the full rate.
+
+### The upstream card's before/after, as upstream published it
+
+Reference only — these are upstream's numbers, from their card (vBIOS `94.06.25.00.4d`, driver 610.88,
+`0000:05:00.0`, display on their second GPU), not measurements from this machine:
+
+| Benchmark | Locked | Unlocked | Δ |
+| --- | ---: | ---: | ---: |
+| FP16 tensor, FP32 accumulate | 25.79 | 47.42 TF/s | +84% |
+| BF16 tensor, FP32 accumulate | 25.66 | 48.58 TF/s | +89% |
+| FP16 tensor, FP16 accumulate (control) | 46.54 | 46.63 TF/s | flat |
+| FP32 pedantic (control) | 8.05 | 8.05 TF/s | flat |
+
+Power during the tensor runs: 102 W locked, 131–141 W unlocked. Their card was at half rate before the
+transaction, same chip family. Our card reads full-rate unlocked and reference-level on the controls, so the
+comparison is consistent.
+
+### What the unlocked state gave Strata
+
+Same fast config, same sweep, fresh prompts, `0 reused`; two repetitions at the locked baseline
+(`--prefill 7168`) and four repetitions after RUN10 (`results/raw/bench-3060-262k-post-run10-unlocked.json`).
+Prefill is the comparison we can use; decode stays noise-only:
+
+| Prompt tokens | Prefill tok/s: locked → unlocked | Δ | Decode tok/s: locked → unlocked |
+| ---: | ---: | ---: | ---: |
+| 1,152 | 228.6 → 244.2 | +6.8% | 62.0 → 67.9 |
+| 4,392 | 534.4 → 582.2 | +8.9% | 59.2 → 66.2 |
+| 34,758 | 684.7 → 744.5 | +8.7% | 62.7 → 63.9 |
+| 138,852 | 668.7 → 719.8 | +7.6% | 57.8 → 61.0 |
+
+The prefill moved consistently, well beyond the ±1% run noise; decode moved by +1.2 to +7 tok/s, and we treat
+that strictly as noise (see "What did not work": agent traffic during every sweep).
+
+A note from the run's power log (`results/raw/gpu-power-run10-sweep.csv`): the memory clock reads 7301 MHz
+until 17:22:00 and 7464 MHz after, because the owner's small memory OC (below) was applied mid-sweep. Reps for
+the two largest sizes partially straddle that switch, so their +8.7% / +7.6% are unlock plus, partially,
+memory OC.
+
+Single-request spot check at 7,063 tokens, `--prefill 7168`, OC'd: **618.6 → 756.5 tok/s**
+(`results/raw/bench-3060-262k-post-run10-oc.json`). It combines unlock + fixed chunk + OC, and is not a clean
+A/B on its own.
+
+### A small memory OC after it
+
+The owner applied a modest memory OC while the unlocked session was running: nvidia-smi reads the memory at
+7464 MHz instead of the stock 7301 MHz (SM reads 1957–2002 MHz against a table max of 2100). Two consequences
+we measured:
+
+- Tensor GEMM did not move: reruns at 21:34 gave 48.41 / 48.15 / 47.91 TF/s against 48.66 / 48.64 / 48.77 at
+  17:57 — the same ceiling, already power-capped in both sessions (`0x4` reason, 131–133 W against the 170 W
+  cap). A memory OC is exactly what a compute-bound ceiling should not change.
+- Under Strata decode work the power limit binds: a 45-minute sampling window
+  (`results/raw/gpu-power-after-oc.csv`, 1,318 samples) shows median **167 W against the 170 W cap** at load,
+  median SM 1957 MHz, memory 7464 MHz, up to 73 °C, with reason bit `0x4` active in 871 of the 1,318 samples.
+- Strata decode did not move: 61.5 / 64.6 tok/s against 61.0 / 63.1 locked. Decode is bound by the CPU/RAM
+  expert pool, not by the tensor rate.
+
+### The Monitor screenshot
+
+![Strata Monitor](assets/strata-monitor.png)
+
+The server's own Monitor page (`http://127.0.0.1:8090/#monitor`), rendered headless browser-side, 31 Oct 22:12,
+unlocked, the 262K config, under real agent traffic. What it shows: hit rate 92.0% (542.5M cached tokens,
+3,365 cached seconds); VRAM 10.9/12 GB with 2,096 experts resident; system RAM 56.3/63.5 GB; power 168 W of
+the 170 W cap; 73 °C; context fill 184K / 258K; the link idle at Gen3 x16. Recent requests rows are our own
+agent session (167K–179K token requests, 91–93% hit) plus the last bench request (256 tokens generated,
+64.6 tok/s decode).
+
+### What we still do not know
+
+- **The unlock state is volatile.** The first transaction did not survive a full power cycle: after a power
+  off, the card read its locked SS0 value again (`0x13414010`, in the refused run09). Warm reboots
+  re-initialise the card, and the guard refuses to write to it there. The current unlocked state lives until
+  the next full power-off.
+- **A locked-state GEMM on this card was never measured.** We have the full-rate number; we do not have a
+  measured half-rate number for this exact card. That baseline is owed, and it belongs at the next full
+  power-off, before any new stick run.
+- **Decode at 80–90 tok/s under Linux, observed and unconfirmed.** An unlocked boot under Linux showed that
+  decode level; the engine logs were not collected, so no number derived from it is in any table here.
+- **Quality.** `STRATA_ROUTE_PRIOR=1.5` has a documented concern (repeated text, weakened long agentic runs)
+  and we have not evaluated it ourselves.
+
 ## Next steps
 
-- A clean unlock A/B: cold boot, one transaction, then Windows immediately, then the same sweep. On this
-  machine that needs the SS0 gate to accept the value the card now reports on a cold boot (the profile
-  currently records four cold boots that all read `0x53414010`, and the fifth refused).
+- At the next full power-off: measure the locked-state GEMM baseline for this card first (the honest "before"
+  for this card), then optionally a fresh UEFI run with a same-state sweep.
+- A PCIe question: every measurement on this machine ran on a Gen3 x16 link (the GEMM logs read current max
+  gen/width 3 × 16). The board and the card are both 4.0-capable; forcing Gen4 in BIOS and re-running the
+  host→device probe and the sweep is an open measurement.
 - More repetitions before drawing any conclusion about decode: four repetitions per size, server idle, no
   agent traffic during the sweep.
 - `--kv int8` versus `q4_0` at 262K.
@@ -254,44 +396,85 @@ Text, scripts and configs: MIT. Model weights, packs and NVIDIA components keep 
 # Русская версия (кратко)
 
 **Результат.** Strata (движок 0.1.54) с моделью Qwen3.8-Flash-Next IQ3_XXS на одной RTX 3060 12 GB,
-Ryzen 7 5700G, Windows 10, 64 GB RAM, контекст 262 144 токена.
-Декодирование выросло с **44 до 61 tok/s** одной переменной `STRATA_ROUTE_PRIOR=1.5`: доля попаданий в кэш экспертов
-поднялась с 61.6% до 91.6%, промахов через PCIe стало 1.0% вместо 6.3%. Остальное (`--spec-min-p 0.5`,
-авто-доля PCIe, резерв VRAM) дало изменения в пределах шума. Prefill 640–641 tok/s на 34K и 138K токенах;
-с `--prefill 7168` (фиксированный размер чанка вместо подобранного движком 6400) стало 684.7 и 668.7 tok/s,
-то есть +6.8% и +4.3%. Скорость генерации при этом не изменилась в лучшую сторону.
+Ryzen 7 5700G, Windows 10, 64 GB RAM, контекст 262 144 токена. Декодирование выросло с **44 до 61 tok/s**
+одной переменной `STRATA_ROUTE_PRIOR=1.5`: доля попаданий в кэш экспертов поднялась с 61.6% до 91.6%,
+промахов через PCIe стало 1.0% вместо 6.3%. Остальное (`--spec-min-p 0.5`, авто-доля PCIe, резерв VRAM)
+дало изменения в пределах шума. Prefill 640–641 tok/s на 34K и 138K токенах; с `--prefill 7168`
+(фиксированный размер чанка вместо подобранного движком 6400) стало 684.7 и 668.7 tok/s, то есть +6.8%
+и +4.3%. Скорость генерации при этом не изменилась в лучшую сторону.
 
-**Разблокировка.** Preflight (только чтение) отработал на четырёх холодных запусках, четвёртый — со всеми
-подтверждёнными гейтами (`complete=1`). Одна транзакция прошла: Bus Master включён/снят, драйвер прошивки
-отпущен, FWSEC поднят, FLR сделан, итог `attempted=1 driver_release=1 clean=1`. Пять последующих запусков
-были остановлены намеренно (`attempted=0`): четыре — потому что карта была в тёплом состоянии, пятый — по
-новой причине, см. ниже.
+**Разблокировка (31 октября, итог).** Preflight (только чтение) — четыре холодных запуска, четвёртый
+со всеми подтверждёнными гейтами (`complete=1`). Первая транзакция (15:31): Bus Master включён/снят,
+драйвер прошивки отпущен, FLR, `attempted=1 clean=1`. Пять последующих запусков остановлены намеренно;
+пятый — из-за `SS0=0x13414010` вместо профильного `0x53414010` (отличается ровно один бит): гейт `ss0=0`,
+`FINAL status=0x8000000000000006 stage=cold-state attempted=0`. В upstream-профиле этой карты бит 30
+из гейта SS0 исключён — мы приняли то же решение в нашем гейте: оба значения (`0x53414010` и `0x13414010`)
+принимаются как валидное холодное состояние. Это настройка уровня гейта, описанная словами; upstream-код
+(GPLv2) в этот MIT-репозиторий не копируем.
 
-Замеры скорости в Windows: baseline (228.6 / 534.4 / 684.7 / 668.7), прогон после транзакции
-(231.1 / 546.3 / 694.4 / 670.3) и контрольный прогон после холодного запуска с остановленной транзакцией
-(225.9 / 540.9 / 694.3 / 669.9 — ничего записано не было). Контрольный prefill совпадает с baseline
-с точностью 1%. Но прогон «после транзакции» не может относиться к разблокировке: между транзакцией (15:31)
-и загрузкой Windows (15:35:50) было ещё четыре запуска флешки, все остановленные, и каждый заново
-инициализирует карту. То есть у нас пока **нет ни одного замера в Windows, который доказанно несёт
-завершённую транзакцию**. Генерация вообще непригодна: два повтора одной длины в одном прогоне дали
-7.7 tok/s разброса, и сервер всё время нагружался нашим же агентом.
+**Вторая транзакция (RUN10).** На холодном запуске 16:44 карта прошла гейт (`ss0=1`), транзакция завершена:
+`selector write: SS0=0x88888888`, `SS1=0x8`, `PCIe FLR returned: result=0`,
+`post-FLR ... SS0=88888888 SS1=00000008`,
+`FINAL status=0 stage=transaction attempted=1 driver_release=1 clean=1`.
+Разблокированные значения остались в регистрах селекторов после FLR; GSP остановлен, WPR2 поднят заново,
+Bus Master снят. Эта загрузка — сессия Windows (16:59 и далее), к которой относятся все замеры этого
+раздела. Полные логи: `evidence/asus3060/asus3060-transaction-02.txt`, остановленный запуск —
+`asus3060-refused-run09.txt`, preflight с подтверждёнными гейтами —
+`asus3060-preflight-04-confirmed.txt`. Прогоны «до» (baseline / run A / run B в таблице сквозной
+скорости выше) к разблокировке отношения не имеют: run A, как описано выше, транзакцию не нёс.
 
-Пятый отказ — важное наблюдение: после полного выключения питания карта читает `SS0=0x13414010`, тогда как
-в профиле записано `0x53414010` с четырёх предыдущих холодных запусков. Отличается ровно один бит (бит 30),
-всё остальное идентично: тот же chip, PLM, GFW, WPR2, `SS1=6`, `fb_mb=0x3000`, BAR0, capability. Две
-гипотезы, и мы не знаем, какая верна: бит сам меняется между холодными запусками (в upstream-профиле этой
-карты бит 30 из гейта SS0 исключён) либо транзакция изменила фиксируемый бит, который пережил выключение
-питания. В любом случае защита сработала, ничего не записано.
+**GEMM-доказательство в разблокированном состоянии (сервер остановлен).** 4096×4096, 15 с, три прогона:
+FP16×FP32-acc **48.66 / 48.64 / 48.77 TF/s** (медианные SM 1942–1950 MHz, 131 W),
+BF16×FP32-acc 50.57 / 50.44 / 50.50 (147 W), контроль FP16×FP16 47.93 / 47.81 / 47.82 (122 W),
+FP32 8.31 / 8.31 / 8.29 (138 W). На гигагерц — **25.0–25.4 TF/GHz**, полная мощность GA106; лимит 170 W
+связывает (бит причины `0x4`). Для справки — числа upstream-карты (другая плата, vBIOS `94.06.25.00.4d`,
+драйвер 610.88): 25.79 → 47.42 (+84%), 25.66 → 48.58 (+89%), контроли не изменились (46.54 → 46.63
+и 8.05 → 8.05). GEMM-базового замера в заблокированном состоянии на нашей карте пока нет — его нужно
+сделать при следующем полном выключении питания.
 
-**Железо.** ASUS PRIME X570-P (BIOS 3801), Ryzen 7 5700G (8 ядер/16 потоков), 2×32 GB Patriot 3200 C16 (работают на 3000 MT/s),
-RTX 3060 12 GB ASUS (`10de:2504`, `1043:881d`), драйвер 616.92, Windows 10 Pro 19045.
+**Что разблокировка дала Strata.** Тот же свип, те же настройки, новые запросы, `0 reused`; два повторения
+в baseline и четыре после RUN10: prefill 228.6 → 244.2, 534.4 → 582.2, 684.7 → 744.5, 668.7 → 719.8
+**(+6.8…+8.9%** от baseline). Decode сдвинулся на +1.2…+7 tok/s — трактуем только как шум. Заметим:
+в power-логе память переключилась с 7301 на 7464 MHz в 17:22 (владелец применил небольшой разгон памяти
+посреди свипа), поэтому два самых крупных размера частично несут разгон, а не только разблокировку.
+Одиночный запрос 7063 токена: 618.6 → **756.5 tok/s** — тут сложены разблокировка, фиксированный чанк
+и разгон памяти; сам по себе это не чистый A/B.
 
-**Что неудачно.** Первый бенчмарк измерял декодирование по SSE-потоку и показывал 103–128 tok/s вместо 45–48 из лога движка.
-Перезапуск сервера несколько раз выдавал READY, пока старый сервер держал порт. Предположение о потере 7% из-за резерва VRAM
-не подтвердилось. Падение с 131K до 262K контекста пока не объяснено изолированным тестом.
+**Небольшой разгон памяти после.** nvidia-smi читает память 7464 MHz вместо штатных 7301 (SM 1957–2002).
+Tensor-GEMM не изменился: перезапуски 21:34 дали 48.41 / 48.15 / 47.91 против 48.66 / 48.64 / 48.77 в 17:57
+— тот же предел, уже упирающийся в лимит (131–133 W против 170 W). Под decode-нагрузкой Strata лимит
+властвует: 45-минутное окно (1,318 замеров, `results/raw/gpu-power-after-oc.csv`) — медианная мощность
+при нагрузке **167 W против лимита 170 W**, SM-медиана 1957 MHz, до 73 °C, бит `0x4` активен
+в 871 из 1,318 замеров. Decode Strata не изменился: 61.5 / 64.6 против 61.0 / 63.1 в заблокированном
+состоянии — decode упирается в пул экспертов CPU/ОЗУ, а не в tensor-мощность.
 
-**Что дальше.** Чистое сравнение разблокировки: холодный запуск, одна транзакция, затем сразу Windows и тот же
-прогон; для этого на нашей машине нужно принять то значение `SS0`, которое карта читает на холодном запуске
-сейчас (профиль записывает четыре запуска по `0x53414010`, а пятый запуск отказал по иному значению). Затем
-`--kv int8` против `q4_0` при 262K, DOCP для ОЗУ, и отдельно проверка качества `STRATA_ROUTE_PRIOR=1.5`
-на длинных агентских задачах — прежде чем рекомендовать его для них.
+**Снимок Monitor.** `assets/strata-monitor.png` — страница Monitor самого сервера (headless-рендер,
+31 октября 22:12, разблокированное состояние, 262K-конфиг, реальный агентский трафик): hits 92.0%
+(542.5M кэшированных токенов), VRAM 10.9/12 GB, 2096 экспертов в VRAM, RAM 56.3/63.5 GB, 168 W из 170 W,
+73 °C, линия в простое Gen3 x16; в Recent requests — наши агентские запросы 167K–179K токенов
+(91–93% hits) и последний бенч-запрос (64.6 tok/s decode).
+
+**Чего мы всё ещё не знаем.** Состояние разблокировки не переживает полное выключение питания: первая
+транзакция не пережила (карта снова читала заблокированное значение `SS0=0x13414010` — это отказ run09;
+тёплые перезагрузки карту переинициализируют, и на них писать отказывается защита). Текущее
+разблокированное состояние живёт до следующего полного выключения. GEMM-базового замера в
+заблокированном состоянии нашей карты у нас нет; Linux-наблюдение (80–90 tok/s decode на
+разблокированной загрузке) — логи движка не собраны, числа из него в таблицы не попадает; качество
+`STRATA_ROUTE_PRIOR=1.5` не проверено.
+
+**Железо.** ASUS PRIME X570-P (BIOS 3801), Ryzen 7 5700G (8 ядер / 16 потоков), 2×32 GB Patriot 3200 C16
+(работают на 3000 MT/s), RTX 3060 12 GB ASUS (`10de:2504`, `1043:881d`), vBIOS `94.06.2f.00.cb`,
+драйвер 616.92, Windows 10 Pro 19045.
+
+**Что неудачно.** Первый бенчмарк измерял декодирование по SSE-потоку и показывал 103–128 tok/s вместо
+45–48 из лога движка. Перезапуск сервера несколько раз выдавал READY, пока старый сервер держал порт.
+Предположение о потере 7% из-за резерва VRAM не подтвердилось. Падение с 131K до 262K контекста пока
+не объяснено изолированным тестом.
+
+**Что дальше.** При следующем полном выключении питания: сначала сделать GEMM-замер этой карты в
+заблокированном состоянии (честное «до» именно для неё), затем по желанию — новый запуск флешки и тот
+же свип в разблокированном состоянии. Вопрос PCIe: все измерения на этой машине прошли на Gen3 x16
+(GEMM-логи фиксируют max gen/width 3 × 16; плата и карта поддерживают 4.0 — стоит попытаться в BIOS
+включить Gen4 и перемерить пробы и свип). Далее: четыре повторения свипа на idle-сервере без агентского
+трафика; `--kv int8` против `q4_0` на 262K; DOCP для ОЗУ на штатные 3200 MT/s; и отдельная проверка
+качества `STRATA_ROUTE_PRIOR=1.5` на длинных агентских задачах — прежде чем рекомендовать его для них.
